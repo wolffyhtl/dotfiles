@@ -14,9 +14,9 @@
   "clock": {
     "interval": 60,
     "format": "{:%H:%M}",
-    //"format-alt": "{:%Y/%m/%d %A}",
+   // "format-alt": "{:%Y/%m/%d %A}",
    // "tooltip":false,
-    "tooltip-format": "{:%Y/%m/%d %A}\n---\n左键：打开时钟\n右键：打开日历",
+    "tooltip-format": "{:%Y/%m/%d %A\n%H:%M:%S}\n---\n左键：打开时钟\n右键：打开日历",
     "max-length": 25,
     "on-click": "gnome-clocks",
     "on-click-right": "gnome-calendar",
