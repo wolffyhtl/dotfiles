@@ -270,9 +270,7 @@ layout {
 // See the binds section below for more spawn examples.
 
 // This line starts waybar, a commonly used bar for Wayland compositors.
-spawn-at-startup "awww-daemon"
 spawn-at-startup "noctalia"
-spawn-at-startup "mako"
 spawn-at-startup "fcitx5"
 spawn-at-startup "~/.config/niri/scripts/swayidle.sh"
 spawn-at-startup "copyq"
@@ -381,7 +379,6 @@ binds {
     Mod+Alt+V {spawn "copyq" "toggle";}
     Mod+Alt+W {spawn "waypaper";}
     Mod+Shift+S {spawn "~/.config/waybar/scripts/screenshot.sh";}
-    Mod+F2 {spawn-sh "(pkill dms || true) && dms run";}
     // Suggested binds for running programs: terminal, app launcher, screen locker.
     Mod+T hotkey-overlay-title="Open a Terminal: alacritty" { spawn "alacritty" "-e" "zsh"; }
     Mod+D hotkey-overlay-title="Run an Application: Noctalia Launcher" { spawn "noctalia" "msg" "panel-toggle" "launcher"; }

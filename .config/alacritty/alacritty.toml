@@ -1,12 +1,12 @@
 [general]
 import = [
-  "~/.config/alacritty/dank-theme.toml"
+    "/home/clina/.config/alacritty/themes/noctalia.toml",
 ]
 
 [window]
 decorations = "None"
 padding = { x = 12, y = 12 }
-opacity = 0.9
+opacity = 0.75
 
 [scrolling]
 history = 3023

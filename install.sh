@@ -19,9 +19,8 @@ sudo dnf install -y \
     zsh \
     alacritty \
     niri \
-    waybar \
+    noctalia \
     mako \
-    fuzzel \
     neovim \
     btop \
     fastfetch \
