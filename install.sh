@@ -1,60 +1,476 @@
 #!/usr/bin/env bash
-# 遇到错误立即退出
-set -e
 
-# 获取脚本所在目录（即 ~/dotfiles）
-DOTFILES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$DOTFILES_DIR"
+# ==============================================================================
+# dotfiles Fedora 一键部署脚本
+#
+# 功能:
+#   1. 菜单选择桌面组件组合（方向键操作）
+#   2. 自动安装所有依赖（dnf / cargo / pip / 字体）
+#   3. 配置 Oh My Zsh + Powerlevel10k + 插件
+#   4. 符号链接 dotfiles
+#   5. 按配置生成 niri spawn.kdl
+# ==============================================================================
 
-echo "🚀 开始部署 Dotfiles (Fedora + Niri)..."
+set -euo pipefail
 
-# --------------------------------------------------------------
-# 1. 安装系统依赖 (dnf)
-# --------------------------------------------------------------
-echo "📦 正在安装必要软件包 (需要 sudo 权限)..."
-sudo dnf install -y \
-    stow \
-    git \
-    curl \
-    zsh \
-    alacritty \
-    niri \
-    noctalia \
-    mako \
-    neovim \
-    btop \
-    fastfetch \
-    fzf \
-    ripgrep \
-    fd-find \
-    bat \
-    brightnessctl \
-    playerctl
+# --- 颜色 ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
+INV='\033[7m'      # 反白
+NINV='\033[27m'    # 取消反白
+CLR='\033[K'       # 清除到行尾
+UPL='\033[A\033[K' # 上移一行并清除
 
-# --------------------------------------------------------------
-# 2. 安装 Oh-My-Zsh (如果尚未安装)
-# --------------------------------------------------------------
-if [ ! -d "$HOME/.oh-my-zsh" ]; then
-    echo "正在安装 Oh-My-Zsh..."
-    # RUNZSH=no 防止安装完成后自动进入新 shell 中断脚本
-    # CHSH=no 防止自动修改默认 shell (我们手动处理)
-    RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
-else
-    echo "Oh-My-Zsh 已存在，跳过安装。"
+
+# --- 常量 ---
+DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"
+BACKUP_DIR="$HOME/.dotfiles-backup-$(date +%Y%m%d-%H%M%S)"
+FEDORA_VERSION="$(rpm -E %fedora 2>/dev/null || true)"
+PROFILE=""
+
+# --- 基础函数 ---
+
+cmd_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+run_as_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    else
+        if ! cmd_exists sudo; then
+            printf "%bError: sudo not found. Run this script as root.%b\n" "$RED" "$NC"
+            exit 1
+        fi
+        sudo "$@"
+    fi
+}
+
+# --- 文件链接 ---
+
+link_file() {
+    local src="$1" dest="$2"
+
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+        local current
+        current="$(readlink "$dest" 2>/dev/null || true)"
+        if [ "$current" = "$src" ]; then
+            return 0
+        fi
+        mkdir -p "$BACKUP_DIR"
+        mv "$dest" "$BACKUP_DIR/"
+        printf "%b备份: %s -> %s%b\n" "$BLUE" "$dest" "$BACKUP_DIR" "$NC"
+    fi
+
+    mkdir -p "$(dirname "$dest")"
+    ln -sf "$src" "$dest"
+    printf "%b链接: %s -> %s%b\n" "$GREEN" "$dest" "$src" "$NC"
+}
+
+link_top_level() {
+    local file basename
+
+    for file in "$DOTFILES_DIR"/.??*; do
+        basename="$(basename "$file")"
+        case "$basename" in
+            .git | .config) continue ;;
+        esac
+        [ -f "$file" ] || continue
+        link_file "$file" "$HOME/$basename"
+    done
+}
+
+link_config_dir() {
+    local dir="$1" entry basename
+
+    for entry in "$DOTFILES_DIR/.config/$dir"*; do
+        [ -e "$entry" ] || continue
+        basename="$(basename "$entry")"
+        [ "$basename" = "config.toml" ] && [ "$dir" = "matugen" ] && continue
+        link_file "$entry" "$HOME/.config/$basename"
+    done
+}
+
+# --- 交互菜单（方向键 + Enter） ---
+
+arrow_menu() {
+    local title="$1"
+    shift
+    local items=("$@")
+    local selected=0
+    local old_stty
+
+    old_stty="$(stty -g 2>/dev/null || true)"
+    stty -echo
+    tput civis 2>/dev/null || true
+    trap 'stty "$old_stty" 2>/dev/null || true; tput cnorm 2>/dev/null || true; tput ed 2>/dev/null || true' RETURN
+
+    _draw() {
+        local i
+        printf "%b\n" "$title"
+        for ((i = 0; i < ${#items[@]}; i++)); do
+            if [ "$i" -eq "$selected" ]; then
+                printf "%b > %b%b%b\n" "  ${INV}" "${items[$i]}" "${NINV}" "${CLR}"
+            else
+                printf "   %b%b\n" "${items[$i]}" "${CLR}"
+            fi
+        done
+    }
+
+    _clear() {
+        local i
+        for ((i = 0; i <= ${#items[@]}; i++)); do
+            printf "%b" "${UPL}"
+        done
+    }
+
+    _draw
+    while true; do
+        local key
+        read -rsn1 key
+        if [ "$key" = $'\e' ]; then
+            read -rsn2 key 2>/dev/null || true
+            case "$key" in
+                '[A')
+                    [ "$selected" -gt 0 ] && selected=$((selected - 1))
+                    ;;
+                '[B')
+                    [ "$selected" -lt "$((${#items[@]} - 1))" ] && selected=$((selected + 1))
+                    ;;
+            esac
+        elif [ -z "$key" ]; then
+            break
+        fi
+        _clear
+        _draw
+    done
+
+    _clear
+    printf "%b> %b%b\n" "${GREEN}" "${items[$selected]}" "${NC}"
+    printf "\n"
+    return "$selected"
+}
+
+select_profile() {
+    local items=(
+        "waybar + mako + copyq + fuzzel"
+        "DankMaterialShell (dms)"
+        "Noctalia"
+        "${RED}取消安装${NC}"
+    )
+
+    arrow_menu "${BLUE}--- 选择桌面组件组合（方向键 / Enter 确认）${NC}" "${items[@]}"
+
+    case "$?" in
+        0) PROFILE="waybar" ;;
+        1) PROFILE="dms" ;;
+        2) PROFILE="noctalia" ;;
+        3)
+            printf "%b安装已取消%b\n" "$YELLOW" "$NC"
+            exit 0
+            ;;
+    esac
+}
+
+# --- 系统包安装 ---
+
+install_packages() {
+    printf "%b>>> 添加软件源...%b\n" "$BLUE" "$NC"
+    run_as_root dnf install -y --nogpgcheck \
+        "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-${FEDORA_VERSION}.noarch.rpm" \
+        "https://download1.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-${FEDORA_VERSION}.noarch.rpm" \
+        2>/dev/null || true
+    run_as_root dnf copr enable -y solopasha/niri 2>/dev/null || true
+    run_as_root dnf copr enable -y solopasha/hyprland 2>/dev/null || true
+
+    local common=(
+        alacritty swaylock fuzzel wlogout swaybg swayidle
+        grim slurp satty swappy wf-recorder wl-clipboard
+        cava btop fastfetch
+        fcitx5 fcitx5-rime neovim starship yazi
+        xarchiver caja pavucontrol playerctl brightnessctl
+        power-profiles-daemon NetworkManager NetworkManager-tui
+        blueman libnotify ImageMagick jq inotify-tools
+        xorg-xprop fzf fish zsh git
+        jetbrains-mono-fonts fontawesome-fonts
+        adw-gtk3-theme mate-polkit python3-pip ffmpeg
+        niri wl-screenrec cliphist hyprlock hyprpicker
+    )
+
+    local extra=()
+    case "$PROFILE" in
+        waybar)  extra=(mako copyq) ;;
+        dms)     extra=(mako) ;;
+        noctalia) extra=() ;;
+    esac
+
+    printf "%b>>> 安装系统包 (通用 + %s)...%b\n" "$BLUE" "$PROFILE" "$NC"
+    run_as_root dnf install -y "${common[@]}" "${extra[@]}"
+    printf "%b系统包安装完成%b\n" "$GREEN" "$NC"
+}
+
+# --- Rust / Cargo ---
+
+install_rust() {
+    if cmd_exists cargo; then
+        return 0
+    fi
+
+    printf "%b>>> 安装 Rust 工具链...%b\n" "$BLUE" "$NC"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    source "$HOME/.cargo/env"
+    printf "%bRust 安装完成%b\n" "$GREEN" "$NC"
+}
+
+install_cargo_pkgs() {
+    local pkgs=(matugen)
+
+    case "$PROFILE" in
+        waybar)   pkgs+=(awww) ;;
+        dms)      pkgs+=(dankmaterialshell) ;;
+        noctalia) pkgs+=(noctalia) ;;
+    esac
+
+    local pkg
+    for pkg in "${pkgs[@]}"; do
+        if cmd_exists "$pkg"; then
+            printf "%b%s 已安装%b\n" "$GREEN" "$pkg" "$NC"
+        else
+            printf "%b>>> 安装 %s (cargo)...%b\n" "$BLUE" "$pkg" "$NC"
+            cargo install "$pkg"
+            printf "%b%s 安装完成%b\n" "$GREEN" "$pkg" "$NC"
+        fi
+    done
+}
+
+# --- pip ---
+
+install_pip_pkgs() {
+    if cmd_exists waypaper; then
+        return 0
+    fi
+
+    printf "%b>>> 安装 waypaper (pip)...%b\n" "$BLUE" "$NC"
+    pip3 install --user waypaper
+    printf "%bwaypaper 安装完成%b\n" "$GREEN" "$NC"
+}
+
+# --- Oh My Zsh ---
+
+install_ohmyzsh() {
+    local custom="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
+
+    if [ ! -d "$HOME/.oh-my-zsh" ]; then
+        printf "%b>>> 安装 Oh My Zsh...%b\n" "$BLUE" "$NC"
+        sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+        printf "%bOh My Zsh 安装完成%b\n" "$GREEN" "$NC"
+    fi
+
+    if [ ! -d "$custom/themes/powerlevel10k" ]; then
+        printf "%b>>> 安装 Powerlevel10k...%b\n" "$BLUE" "$NC"
+        git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$custom/themes/powerlevel10k"
+        printf "%bPowerlevel10k 安装完成%b\n" "$GREEN" "$NC"
+    fi
+
+    local plugins=(
+        "zsh-autosuggestions:https://github.com/zsh-users/zsh-autosuggestions"
+        "zsh-syntax-highlighting:https://github.com/zsh-users/zsh-syntax-highlighting"
+    )
+
+    local entry name url
+    for entry in "${plugins[@]}"; do
+        name="${entry%%:*}"
+        url="${entry##*:}"
+        if [ ! -d "$custom/plugins/$name" ]; then
+            printf "%b>>> 安装 zsh 插件 %s...%b\n" "$BLUE" "$name" "$NC"
+            git clone "$url" "$custom/plugins/$name"
+            printf "%b%s 安装完成%b\n" "$GREEN" "$name" "$NC"
+        fi
+    done
+}
+
+# --- 字体 ---
+
+install_fonts() {
+    if fc-list :lang=zh 2>/dev/null | grep -qi "MapleMono"; then
+        return 0
+    fi
+
+    local version="v6.4"
+    local zip="MapleMono-NF-CN-${version}.zip"
+    local dest="$HOME/.local/share/fonts"
+
+    printf "%b>>> 下载 Maple Mono NF CN 字体...%b\n" "$BLUE" "$NC"
+    mkdir -p "$dest"
+    wget -q "https://github.com/subframe7536/Maple-font/releases/download/${version}/${zip}" -O "/tmp/${zip}"
+    unzip -qo "/tmp/${zip}" -d "$dest" 2>/dev/null
+    fc-cache -f "$dest" 2>/dev/null
+    printf "%bMaple Mono NF CN 字体安装完成%b\n" "$GREEN" "$NC"
+}
+
+# --- 链接 dotfiles ---
+
+link_dotfiles() {
+    local common_dirs=(
+        alacritty btop caja caja-actions cava fastfetch fcitx5 fish
+        gtk-3.0 gtk-4.0 matugen niri nvim scripts swaylock
+        swayosd waypaper wlogout xarchiver yazi
+    )
+    local common_files=(mimeapps.list sealert.conf starship.toml)
+
+    printf "%b>>> 链接 dotfiles...%b\n" "$BLUE" "$NC"
+    link_top_level
+
+    local dir
+    for dir in "${common_dirs[@]}"; do
+        link_config_dir "$dir"
+    done
+
+    local f
+    for f in "${common_files[@]}"; do
+        [ -f "$DOTFILES_DIR/.config/$f" ] && link_file "$DOTFILES_DIR/.config/$f" "$HOME/.config/$f"
+    done
+
+    case "$PROFILE" in
+        waybar)   link_config_dir "waybar"; link_config_dir "mako"; link_config_dir "copyq"; link_config_dir "fuzzel" ;;
+        dms)      link_config_dir "DankMaterialShell" ;;
+        noctalia) link_config_dir "noctalia" ;;
+    esac
+
+    printf "%bdotfiles 链接完成%b\n" "$GREEN" "$NC"
+}
+
+# --- 按配置生成文件 ---
+
+write_matugen_config() {
+    local src="$DOTFILES_DIR/.config/matugen/config.toml"
+    local dest="$HOME/.config/matugen/config.toml"
+    local cmd
+
+    case "$PROFILE" in
+        waybar)   cmd="awww" ;;
+        dms)      cmd="dms ipc call wallpaper set" ;;
+        noctalia) cmd="noctalia msg wallpaper-set" ;;
+    esac
+
+    mkdir -p "$HOME/.config/matugen"
+    sed "s|^command = '.*'|command = '${cmd}'|" "$src" > "$dest"
+    printf "%bmatugen 配置已生成（壁纸: %s）%b\n" "$GREEN" "$cmd" "$NC"
+}
+
+write_waypaper_config() {
+    local dest="$HOME/.config/waypaper/config.ini"
+
+    case "$PROFILE" in
+        dms | noctalia)
+            if [ -L "$dest" ]; then
+                cp --remove-destination "$DOTFILES_DIR/.config/waypaper/config.ini" "$dest"
+                sed -i 's/^backend = awww/backend = swaybg/' "$dest"
+                printf "%bwaypaper 后端已切换 swaybg（%s 不依赖 awww）%b\n" "$GREEN" "$PROFILE" "$NC"
+            fi
+            ;;
+    esac
+}
+
+write_spawn_kdl() {
+    local file="$HOME/.config/niri/spawn.kdl"
+
+    mkdir -p "$HOME/.config/niri"
+
+    case "$PROFILE" in
+        waybar)
+            cat > "$file" << 'KDL'
+// Profile: waybar + mako + copyq + fuzzel
+spawn-at-startup "waybar"
+spawn-at-startup "mako"
+spawn-at-startup "copyq"
+KDL
+            ;;
+        dms)
+            cat > "$file" << 'KDL'
+// Profile: DankMaterialShell
+spawn-at-startup "dms"
+KDL
+            ;;
+        noctalia)
+            cat > "$file" << 'KDL'
+// Profile: Noctalia（自带栏、启动器、通知、剪贴板）
+spawn-at-startup "noctalia"
+KDL
+            ;;
+    esac
+
+    printf "%bniri spawn.kdl 已生成（%s）%b\n" "$GREEN" "$PROFILE" "$NC"
+}
+
+# --- 杂项 ---
+
+disable_arch_check_updates() {
+    local target="$HOME/.config/waybar/scripts/check-updates.sh"
+
+    if [ -L "$target" ]; then
+        mv "$target" "${target}.disabled" 2>/dev/null || true
+        printf "%bcheck-updates.sh 为 Arch 专用，已禁用%b\n" "$YELLOW" "$NC"
+    fi
+}
+
+change_shell() {
+    if [ "$SHELL" = "$(which zsh)" ]; then
+        return 0
+    fi
+
+    printf "%b>>> 切换默认 shell 为 zsh...%b\n" "$BLUE" "$NC"
+    chsh -s "$(which zsh)"
+    printf "%b默认 shell 已切换为 zsh，重新登录生效%b\n" "$GREEN" "$NC"
+}
+
+# ==============================================================================
+# 主流程
+# ==============================================================================
+
+printf "\n"
+printf "%b================================%b\n" "$CYAN" "$NC"
+printf "%b  dotfiles Fedora 一键部署%b\n" "$CYAN" "$NC"
+printf "%b================================%b\n" "$CYAN" "$NC"
+printf "\n"
+
+if [ -z "$FEDORA_VERSION" ]; then
+    printf "%bError: 此脚本仅支持 Fedora Linux%b\n" "$RED" "$NC"
+    exit 1
 fi
+printf "%b系统检测: Fedora %s x86_64%b\n" "$GREEN" "$FEDORA_VERSION" "$NC"
 
-git clone --depth=1 https://gitee.com/romkatv/powerlevel10k.git ${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/themes/powerlevel10k
-git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
-git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-syntax-highlighting
+select_profile
+printf "%b已选择: %s%b\n" "$GREEN" "$PROFILE" "$NC"
 
-cp .zshrc ~/
-cp .vimrc ~/
-cp .p10k.zsh ~/
-cp -r .config/* ~/.config/
+printf "%b>>> 准备安装环境...%b\n" "$BLUE" "$NC"
+run_as_root true  # 提前缓存 sudo 凭据
 
-chsh -s /usr/bin/zsh
-# --------------------------------------------------------------
-# 3. 完成提示
-# --------------------------------------------------------------
-echo ""
-echo "Dotfiles 部署完成！"
+install_packages
+install_rust
+install_cargo_pkgs
+install_pip_pkgs
+install_ohmyzsh
+install_fonts
+link_dotfiles
+write_matugen_config
+write_waypaper_config
+write_spawn_kdl
+disable_arch_check_updates
+change_shell
+
+printf "\n"
+printf "%b全部完成！%b\n" "$GREEN" "$NC"
+printf "  %b备份目录:%b %s\n" "$BLUE" "$NC" "$BACKUP_DIR"
+printf "  %b当前配置:%b %s\n" "$BLUE" "$NC" "$PROFILE"
+printf "\n"
+printf "  后续步骤:\n"
+printf "    1. 重新登录或重启\n"
+printf "    2. 运行 ~/.config/scripts/matugen-update.sh 生成主题\n"
+printf "    3. 在登录管理器中选择 niri 进入 Wayland 会话\n"
+printf "\n"
+printf "%b如需切换配置，重新运行 install.sh 即可%b\n" "$YELLOW" "$NC"
