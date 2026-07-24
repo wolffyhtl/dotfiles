@@ -919,3 +919,7 @@ conds = [
 	{ if = "!dir", text = "", fg = "#ffb3b3" },
 ]
 # : }}}
+
+[flavor]
+dark = "noctalia"
+light = "noctalia"

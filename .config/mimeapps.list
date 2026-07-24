@@ -1,2 +1,7 @@
 [Added Associations]
 application/zip=xarchiver.desktop;
+application/vnd.flatpak.ref=org.kde.discover.desktop;gnome-software-local-file-flatpak.desktop;
+
+[Default Applications]
+inode/directory=caja.desktop
+application/vnd.flatpak.ref=gnome-software-local-file-flatpak.desktop

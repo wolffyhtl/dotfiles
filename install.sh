@@ -182,13 +182,14 @@ install_packages() {
     printf "%b>>> 添加软件源...%b\n" "$BLUE" "$NC"
     run_as_root dnf install -y --nogpgcheck \
         "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-${FEDORA_VERSION}.noarch.rpm" \
-        "https://download1.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-${FEDORA_VERSION}.noarch.rpm" \
         2>/dev/null || true
-    run_as_root dnf copr enable -y solopasha/niri 2>/dev/null || true
     run_as_root dnf copr enable -y solopasha/hyprland 2>/dev/null || true
+    run_as_root dnf copr enable -y scottames/awww 2>/dev/null || true
+    run_as_root dnf copr enable -y eddsalkield/swaylock-effects 2>/dev/null || true
+    run_as_root dnf copr enable -y avengemedia/dms 2>/dev/null || true
 
     local common=(
-        alacritty swaylock fuzzel wlogout swaybg swayidle
+        alacritty swaylock-effects fuzzel wlogout swaybg swayidle
         grim slurp satty swappy wf-recorder wl-clipboard
         cava btop fastfetch
         fcitx5 fcitx5-rime neovim starship yazi
@@ -198,65 +199,19 @@ install_packages() {
         xorg-xprop fzf fish zsh git
         jetbrains-mono-fonts fontawesome-fonts
         adw-gtk3-theme mate-polkit python3-pip ffmpeg
-        niri wl-screenrec cliphist hyprlock hyprpicker
+        niri wl-screenrec matugen
     )
 
     local extra=()
     case "$PROFILE" in
-        waybar)  extra=(mako copyq) ;;
-        dms)     extra=(mako) ;;
-        noctalia) extra=() ;;
+        waybar)  extra=(waybar mako copyq awww waypaper) ;;
+        dms)     extra=(dms) ;;
+        noctalia) extra=(noctalia) ;;
     esac
 
     printf "%b>>> 安装系统包 (通用 + %s)...%b\n" "$BLUE" "$PROFILE" "$NC"
     run_as_root dnf install -y "${common[@]}" "${extra[@]}"
     printf "%b系统包安装完成%b\n" "$GREEN" "$NC"
-}
-
-# --- Rust / Cargo ---
-
-install_rust() {
-    if cmd_exists cargo; then
-        return 0
-    fi
-
-    printf "%b>>> 安装 Rust 工具链...%b\n" "$BLUE" "$NC"
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source "$HOME/.cargo/env"
-    printf "%bRust 安装完成%b\n" "$GREEN" "$NC"
-}
-
-install_cargo_pkgs() {
-    local pkgs=(matugen)
-
-    case "$PROFILE" in
-        waybar)   pkgs+=(awww) ;;
-        dms)      pkgs+=(dankmaterialshell) ;;
-        noctalia) pkgs+=(noctalia) ;;
-    esac
-
-    local pkg
-    for pkg in "${pkgs[@]}"; do
-        if cmd_exists "$pkg"; then
-            printf "%b%s 已安装%b\n" "$GREEN" "$pkg" "$NC"
-        else
-            printf "%b>>> 安装 %s (cargo)...%b\n" "$BLUE" "$pkg" "$NC"
-            cargo install "$pkg"
-            printf "%b%s 安装完成%b\n" "$GREEN" "$pkg" "$NC"
-        fi
-    done
-}
-
-# --- pip ---
-
-install_pip_pkgs() {
-    if cmd_exists waypaper; then
-        return 0
-    fi
-
-    printf "%b>>> 安装 waypaper (pip)...%b\n" "$BLUE" "$NC"
-    pip3 install --user waypaper
-    printf "%bwaypaper 安装完成%b\n" "$GREEN" "$NC"
 }
 
 # --- Oh My Zsh ---
@@ -300,8 +255,8 @@ install_fonts() {
         return 0
     fi
 
-    local version="v6.4"
-    local zip="MapleMono-NF-CN-${version}.zip"
+    local version="v7.9"
+    local zip="MapleMono-NF-CN.zip"
     local dest="$HOME/.local/share/fonts"
 
     printf "%b>>> 下载 Maple Mono NF CN 字体...%b\n" "$BLUE" "$NC"
@@ -318,7 +273,7 @@ link_dotfiles() {
     local common_dirs=(
         alacritty btop caja caja-actions cava fastfetch fcitx5 fish
         gtk-3.0 gtk-4.0 matugen niri nvim scripts swaylock
-        swayosd waypaper wlogout xarchiver yazi
+        swayosd wlogout xarchiver yazi
     )
     local common_files=(mimeapps.list sealert.conf starship.toml)
 
@@ -336,7 +291,7 @@ link_dotfiles() {
     done
 
     case "$PROFILE" in
-        waybar)   link_config_dir "waybar"; link_config_dir "mako"; link_config_dir "copyq"; link_config_dir "fuzzel" ;;
+        waybar)   link_config_dir "waybar"; link_config_dir "mako"; link_config_dir "copyq"; link_config_dir "fuzzel"; link_config_dir "waypaper" ;;
         dms)      link_config_dir "DankMaterialShell" ;;
         noctalia) link_config_dir "noctalia" ;;
     esac
@@ -360,20 +315,6 @@ write_matugen_config() {
     mkdir -p "$HOME/.config/matugen"
     sed "s|^command = '.*'|command = '${cmd}'|" "$src" > "$dest"
     printf "%bmatugen 配置已生成（壁纸: %s）%b\n" "$GREEN" "$cmd" "$NC"
-}
-
-write_waypaper_config() {
-    local dest="$HOME/.config/waypaper/config.ini"
-
-    case "$PROFILE" in
-        dms | noctalia)
-            if [ -L "$dest" ]; then
-                cp --remove-destination "$DOTFILES_DIR/.config/waypaper/config.ini" "$dest"
-                sed -i 's/^backend = awww/backend = swaybg/' "$dest"
-                printf "%bwaypaper 后端已切换 swaybg（%s 不依赖 awww）%b\n" "$GREEN" "$PROFILE" "$NC"
-            fi
-            ;;
-    esac
 }
 
 write_spawn_kdl() {
@@ -451,14 +392,10 @@ printf "%b>>> 准备安装环境...%b\n" "$BLUE" "$NC"
 run_as_root true  # 提前缓存 sudo 凭据
 
 install_packages
-install_rust
-install_cargo_pkgs
-install_pip_pkgs
 install_ohmyzsh
 install_fonts
 link_dotfiles
 write_matugen_config
-write_waypaper_config
 write_spawn_kdl
 disable_arch_check_updates
 change_shell
